@@ -1,3 +1,7 @@
+import pickle
+import sqlite3
+
+import numpy as np
 from click.testing import CliRunner
 
 from doppelsort.cli import main
@@ -19,3 +23,68 @@ def test_scan_command_help_renders() -> None:
     assert result.exit_code == 0
     assert "TARGET_DIR" in result.output
     assert "--db-path" in result.output
+
+
+def test_match_uses_sqlite_database(tmp_path, monkeypatch) -> None:
+    source_path = tmp_path / "source.jpg"
+    source_path.write_bytes(b"source")
+
+    db_path = tmp_path / "faces.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE faces (
+            id INTEGER PRIMARY KEY,
+            image_path TEXT NOT NULL,
+            bbox TEXT NOT NULL,
+            embedding BLOB NOT NULL,
+            embedding_norm REAL,
+            timestamp INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO faces (image_path, bbox, embedding, embedding_norm, timestamp) VALUES (?, ?, ?, ?, ?)",
+        (
+            str(tmp_path / "a.jpg"),
+            '{"x": 1, "y": 2, "w": 3, "h": 4}',
+            pickle.dumps(np.array([1.0, 0.0, 0.0], dtype=np.float32), protocol=pickle.HIGHEST_PROTOCOL),
+            1.0,
+            123,
+        ),
+    )
+    conn.execute(
+        "INSERT INTO faces (image_path, bbox, embedding, embedding_norm, timestamp) VALUES (?, ?, ?, ?, ?)",
+        (
+            str(tmp_path / "b.jpg"),
+            '{"x": 1, "y": 2, "w": 3, "h": 4}',
+            pickle.dumps(np.array([0.9, 0.0, 0.0], dtype=np.float32), protocol=pickle.HIGHEST_PROTOCOL),
+            1.0,
+            456,
+        ),
+    )
+    conn.execute(
+        "INSERT INTO faces (image_path, bbox, embedding, embedding_norm, timestamp) VALUES (?, ?, ?, ?, ?)",
+        (
+            str(tmp_path / "c.jpg"),
+            '{"x": 1, "y": 2, "w": 3, "h": 4}',
+            pickle.dumps(np.array([0.0, 1.0, 0.0], dtype=np.float32), protocol=pickle.HIGHEST_PROTOCOL),
+            1.0,
+            789,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(
+        "doppelsort.cli.DeepFace.represent",
+        lambda **kwargs: [{"embedding": np.array([1.0, 0.0, 0.0], dtype=np.float32)}],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["match", str(source_path), "--db-path", str(db_path), "--top-n", "2"])
+
+    assert result.exit_code == 0
+    assert "a.jpg" in result.output
+    assert "b.jpg" in result.output
+    assert "c.jpg" not in result.output

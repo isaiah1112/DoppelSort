@@ -136,6 +136,87 @@ def index_target_directory(
         conn.close()
 
 
+def _load_db_faces(db_path: Path) -> list[dict[str, Any]]:
+    if not db_path.exists():
+        raise FileNotFoundError(f"Face database not found: {db_path}")
+
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT id, image_path, bbox, embedding, embedding_norm FROM faces"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    faces: list[dict[str, Any]] = []
+    for row in rows:
+        record_id, image_path, bbox_json, embedding_blob, embedding_norm = row
+        try:
+            embedding = pickle.loads(embedding_blob)
+        except Exception:
+            continue
+
+        arr = np.asarray(embedding, dtype=np.float32).reshape(-1)
+        if arr.size == 0:
+            continue
+
+        faces.append(
+            {
+                "id": record_id,
+                "path": image_path,
+                "bbox": json.loads(bbox_json) if bbox_json else {},
+                "embedding": arr.astype(np.float32),
+                "embedding_norm": float(embedding_norm) if embedding_norm is not None else float(np.linalg.norm(arr)),
+            }
+        )
+
+    return faces
+
+
+def match_source_to_db(
+    source_image: Path,
+    db_path: Path,
+    top_n: int = 5,
+    model_name: str = "ArcFace",
+    detector_backend: str = "retinaface",
+) -> list[dict[str, object]]:
+    if not source_image.exists():
+        raise FileNotFoundError(f"Source image not found: {source_image}")
+
+    source_faces = _extract_face_entries(
+        image_path=source_image,
+        model_name=model_name,
+        detector_backend=detector_backend,
+    )
+    if not source_faces:
+        raise ValueError(
+            "No valid face was detected in the source image. Check that the source image contains a detectable portrait."
+        )
+
+    source_embedding = np.mean(np.stack([face["embedding"] for face in source_faces]), axis=0).astype(np.float32)
+    db_faces = _load_db_faces(db_path)
+    if not db_faces:
+        raise ValueError(f"No face embeddings were found in the SQLite database: {db_path}")
+
+    scored_matches: list[dict[str, object]] = []
+    for record in db_faces:
+        candidate_embedding = record["embedding"]
+        distance = float(np.linalg.norm(source_embedding - candidate_embedding))
+        similarity = 1.0 / (1.0 + distance)
+        scored_matches.append(
+            {
+                "id": record["id"],
+                "path": record["path"],
+                "bbox": record["bbox"],
+                "distance": round(distance, 6),
+                "similarity": round(similarity, 6),
+            }
+        )
+
+    scored_matches.sort(key=lambda item: (float(item["distance"]), -float(item["similarity"])))
+    return scored_matches[:top_n]
+
+
 def find_top_matches(
     source_image: Path,
     target_dir: Path,
@@ -247,26 +328,31 @@ def scan(
 
 @main.command("match")
 @click.argument("source_image", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.argument("target_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--db-path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="SQLite face index created by the scan command.",
+)
 @click.option(
     "--top-n",
     default=5,
     show_default=True,
     type=click.IntRange(1),
-    help="Return the N closest matches from the target directory.",
+    help="Return the N closest matches from the SQLite database.",
 )
 @click.option(
     "--model-name",
     default="ArcFace",
     show_default=True,
-    help="DeepFace embedding model to use for the comparison.",
+    help="DeepFace embedding model to use for the source image comparison.",
 )
 @click.option(
     "--detector-backend",
     default="retinaface",
     show_default=True,
     type=click.Choice(["retinaface", "mtcnn", "opencv", "ssd", "dlib", "mediapipe"], case_sensitive=False),
-    help="Detector backend used to find the face in each image.",
+    help="Detector backend used to find the face in the source image.",
 )
 @click.option(
     "--json",
@@ -276,17 +362,17 @@ def scan(
 )
 def match(
     source_image: Path,
-    target_dir: Path,
+    db_path: Path,
     top_n: int,
     model_name: str,
     detector_backend: str,
     json: bool,
 ) -> None:
-    """Match a source portrait against a directory of portraits."""
+    """Match a source portrait against faces already indexed in SQLite."""
     try:
-        results = find_top_matches(
+        results = match_source_to_db(
             source_image=source_image,
-            target_dir=target_dir,
+            db_path=db_path,
             top_n=top_n,
             model_name=model_name,
             detector_backend=detector_backend,
