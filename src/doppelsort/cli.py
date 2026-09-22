@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import pickle
 import sqlite3
 import time
 from pathlib import Path
@@ -65,9 +64,19 @@ def _extract_face_entries(
     return faces
 
 
+def _serialize_embedding(embedding: np.ndarray) -> bytes:
+    array = np.asarray(embedding, dtype=np.float32)
+    return array.tobytes()
+
+
+def _deserialize_embedding(blob: bytes) -> np.ndarray:
+    return np.frombuffer(blob, dtype=np.float32).copy()
+
+
 def _create_face_index_db(db_path: Path, *, overwrite: bool = False) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS faces (
@@ -114,7 +123,7 @@ def index_target_directory(
             for face in faces:
                 embedding = face["embedding"]
                 bbox = face["bbox"]
-                embedding_blob = pickle.dumps(embedding, protocol=pickle.HIGHEST_PROTOCOL)
+                embedding_blob = _serialize_embedding(embedding)
                 conn.execute(
                     """
                     INSERT INTO faces (image_path, bbox, embedding, embedding_norm, timestamp)
@@ -151,12 +160,10 @@ def _load_db_faces(db_path: Path) -> list[dict[str, Any]]:
     faces: list[dict[str, Any]] = []
     for row in rows:
         record_id, image_path, bbox_json, embedding_blob, embedding_norm = row
-        try:
-            embedding = pickle.loads(embedding_blob)
-        except Exception:
+        if not embedding_blob:
             continue
 
-        arr = np.asarray(embedding, dtype=np.float32).reshape(-1)
+        arr = _deserialize_embedding(embedding_blob)
         if arr.size == 0:
             continue
 

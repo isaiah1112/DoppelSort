@@ -1,4 +1,3 @@
-import pickle
 import sqlite3
 
 import numpy as np
@@ -48,7 +47,7 @@ def test_match_uses_sqlite_database(tmp_path, monkeypatch) -> None:
         (
             str(tmp_path / "a.jpg"),
             '{"x": 1, "y": 2, "w": 3, "h": 4}',
-            pickle.dumps(np.array([1.0, 0.0, 0.0], dtype=np.float32), protocol=pickle.HIGHEST_PROTOCOL),
+            np.array([1.0, 0.0, 0.0], dtype=np.float32).tobytes(),
             1.0,
             123,
         ),
@@ -58,7 +57,7 @@ def test_match_uses_sqlite_database(tmp_path, monkeypatch) -> None:
         (
             str(tmp_path / "b.jpg"),
             '{"x": 1, "y": 2, "w": 3, "h": 4}',
-            pickle.dumps(np.array([0.9, 0.0, 0.0], dtype=np.float32), protocol=pickle.HIGHEST_PROTOCOL),
+            np.array([0.9, 0.0, 0.0], dtype=np.float32).tobytes(),
             1.0,
             456,
         ),
@@ -68,7 +67,7 @@ def test_match_uses_sqlite_database(tmp_path, monkeypatch) -> None:
         (
             str(tmp_path / "c.jpg"),
             '{"x": 1, "y": 2, "w": 3, "h": 4}',
-            pickle.dumps(np.array([0.0, 1.0, 0.0], dtype=np.float32), protocol=pickle.HIGHEST_PROTOCOL),
+            np.array([0.0, 1.0, 0.0], dtype=np.float32).tobytes(),
             1.0,
             789,
         ),
