@@ -8,5 +8,14 @@ def test_cli_help_renders() -> None:
     result = runner.invoke(main, ["--help"])
 
     assert result.exit_code == 0
-    assert "Compare a source portrait to a directory of portraits" in result.output
-    assert "--top-n" in result.output
+    assert "scan" in result.output.lower()
+    assert "match" in result.output.lower()
+
+
+def test_scan_command_help_renders() -> None:
+    runner = CliRunner()
+    result = runner.invoke(main, ["scan", "--help"])
+
+    assert result.exit_code == 0
+    assert "TARGET_DIR" in result.output
+    assert "--db-path" in result.output

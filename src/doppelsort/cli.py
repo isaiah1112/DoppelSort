@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import json
+import pickle
+import sqlite3
+import time
 from pathlib import Path
+from typing import Any
 
 import click
+import numpy as np
 from deepface import DeepFace
 
 SUPPORTED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
@@ -11,8 +16,124 @@ SUPPORTED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
 def _list_candidate_images(target_dir: Path) -> list[Path]:
     return sorted(
-        path for path in target_dir.iterdir() if path.is_file() and path.suffix.lower() in SUPPORTED_IMAGE_SUFFIXES
+        (
+            path
+            for path in target_dir.rglob("*")
+            if path.is_file() and path.suffix.lower() in SUPPORTED_IMAGE_SUFFIXES
+        ),
+        key=lambda path: str(path),
     )
+
+
+def _extract_face_entries(
+    image_path: Path,
+    model_name: str,
+    detector_backend: str,
+) -> list[dict[str, Any]]:
+    result = DeepFace.represent(
+        img_path=str(image_path),
+        model_name=model_name,
+        detector_backend=detector_backend,
+        enforce_detection=True,
+        align=True,
+    )
+
+    if isinstance(result, dict):
+        payload = [result]
+    elif isinstance(result, list) and result and isinstance(result[0], dict):
+        payload = result
+    elif isinstance(result, list):
+        payload = [{"embedding": result}]
+    else:
+        payload = []
+
+    faces: list[dict[str, Any]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        embedding = item.get("embedding")
+        if embedding is None:
+            continue
+
+        arr = np.asarray(embedding, dtype=np.float32).reshape(-1)
+        if arr.size == 0:
+            continue
+
+        bbox = item.get("facial_area") or item.get("bbox") or {"x": 0, "y": 0, "w": 0, "h": 0}
+        faces.append({"embedding": arr.astype(np.float32), "bbox": bbox})
+
+    return faces
+
+
+def _create_face_index_db(db_path: Path, *, overwrite: bool = False) -> sqlite3.Connection:
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS faces (
+            id INTEGER PRIMARY KEY,
+            image_path TEXT NOT NULL,
+            bbox TEXT NOT NULL,
+            embedding BLOB NOT NULL,
+            embedding_norm REAL,
+            timestamp INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_faces_image_path ON faces(image_path)")
+    if overwrite:
+        conn.execute("DELETE FROM faces")
+    return conn
+
+
+def index_target_directory(
+    target_dir: Path,
+    db_path: Path,
+    model_name: str = "ArcFace",
+    detector_backend: str = "retinaface",
+    overwrite: bool = True,
+) -> int:
+    if not target_dir.exists():
+        raise FileNotFoundError(f"Target directory not found: {target_dir}")
+    if not target_dir.is_dir():
+        raise NotADirectoryError(f"Target path is not a directory: {target_dir}")
+
+    candidates = _list_candidate_images(target_dir)
+    if not candidates:
+        raise ValueError(f"No supported image files were found in {target_dir}")
+
+    conn = _create_face_index_db(db_path, overwrite=overwrite)
+    inserted_rows = 0
+    try:
+        for image_path in candidates:
+            try:
+                faces = _extract_face_entries(image_path, model_name=model_name, detector_backend=detector_backend)
+            except Exception:
+                continue
+
+            for face in faces:
+                embedding = face["embedding"]
+                bbox = face["bbox"]
+                embedding_blob = pickle.dumps(embedding, protocol=pickle.HIGHEST_PROTOCOL)
+                conn.execute(
+                    """
+                    INSERT INTO faces (image_path, bbox, embedding, embedding_norm, timestamp)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(image_path),
+                        json.dumps(bbox, sort_keys=True),
+                        embedding_blob,
+                        float(np.linalg.norm(embedding)),
+                        int(time.time()),
+                    ),
+                )
+                inserted_rows += 1
+
+        conn.commit()
+        return inserted_rows
+    finally:
+        conn.close()
 
 
 def find_top_matches(
@@ -65,10 +186,66 @@ def find_top_matches(
     return matches[:top_n]
 
 
-@click.command(
+@click.group(
     context_settings={"help_option_names": ["-h", "--help"]},
-    help="Compare a source portrait to a directory of portraits and return the closest matches.",
+    help="Match a source portrait against indexed candidate faces or build a face index from a target directory.",
 )
+def main() -> None:
+    """CLI entry point for indexing and matching portraits."""
+    return
+
+
+@main.command("scan")
+@click.argument("target_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--db-path",
+    default="faces.db",
+    show_default=True,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Destination SQLite database path for the face index.",
+)
+@click.option(
+    "--model-name",
+    default="ArcFace",
+    show_default=True,
+    help="DeepFace embedding model to use while indexing target portraits.",
+)
+@click.option(
+    "--detector-backend",
+    default="retinaface",
+    show_default=True,
+    type=click.Choice(["retinaface", "mtcnn", "opencv", "ssd", "dlib", "mediapipe"], case_sensitive=False),
+    help="Detector backend used to find faces in the target image set.",
+)
+@click.option(
+    "--overwrite/--append",
+    default=True,
+    show_default=True,
+    help="Clear the existing index before scanning or append new faces to the database.",
+)
+def scan(
+    target_dir: Path,
+    db_path: Path,
+    model_name: str,
+    detector_backend: str,
+    overwrite: bool,
+) -> None:
+    """Scan a directory of portraits and create a SQLite face index."""
+    try:
+        inserted = index_target_directory(
+            target_dir=target_dir,
+            db_path=db_path,
+            model_name=model_name,
+            detector_backend=detector_backend,
+            overwrite=overwrite,
+        )
+    except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    click.echo(f"Indexed {inserted} faces into {db_path}")
+
+
+@main.command("match")
 @click.argument("source_image", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.argument("target_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option(
@@ -97,7 +274,7 @@ def find_top_matches(
     default=False,
     help="Emit the results as JSON instead of a text table.",
 )
-def main(
+def match(
     source_image: Path,
     target_dir: Path,
     top_n: int,
@@ -105,7 +282,7 @@ def main(
     detector_backend: str,
     json: bool,
 ) -> None:
-    """CLI entry point for comparing a source portrait to a directory of target portraits."""
+    """Match a source portrait against a directory of portraits."""
     try:
         results = find_top_matches(
             source_image=source_image,
