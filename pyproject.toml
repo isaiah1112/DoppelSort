@@ -1,7 +1,7 @@
 [project]
 name = "doppelsort"
 version = "0.1.0"
-description = "A python CLI for matching an image to others to find a "doppelgänger""
+description = "A python CLI for matching an image to others to find a \"doppelgänger\""
 readme = "README.md"
 authors = [
     { name = "Jesse Almanrode", email = "jesse@almanrode.com" }
