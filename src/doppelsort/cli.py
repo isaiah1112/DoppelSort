@@ -114,30 +114,31 @@ def index_target_directory(
     conn = _create_face_index_db(db_path, overwrite=overwrite)
     inserted_rows = 0
     try:
-        for image_path in candidates:
-            try:
-                faces = _extract_face_entries(image_path, model_name=model_name, detector_backend=detector_backend)
-            except Exception:
-                continue
+        with click.progressbar(candidates, label="Indexing faces") as progress:
+            for image_path in progress:
+                try:
+                    faces = _extract_face_entries(image_path, model_name=model_name, detector_backend=detector_backend)
+                except Exception:
+                    continue
 
-            for face in faces:
-                embedding = face["embedding"]
-                bbox = face["bbox"]
-                embedding_blob = _serialize_embedding(embedding)
-                conn.execute(
-                    """
-                    INSERT INTO faces (image_path, bbox, embedding, embedding_norm, timestamp)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (
-                        str(image_path),
-                        json.dumps(bbox, sort_keys=True),
-                        embedding_blob,
-                        float(np.linalg.norm(embedding)),
-                        int(time.time()),
-                    ),
-                )
-                inserted_rows += 1
+                for face in faces:
+                    embedding = face["embedding"]
+                    bbox = face["bbox"]
+                    embedding_blob = _serialize_embedding(embedding)
+                    conn.execute(
+                        """
+                        INSERT INTO faces (image_path, bbox, embedding, embedding_norm, timestamp)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(image_path),
+                            json.dumps(bbox, sort_keys=True),
+                            embedding_blob,
+                            float(np.linalg.norm(embedding)),
+                            int(time.time()),
+                        ),
+                    )
+                    inserted_rows += 1
 
         conn.commit()
         return inserted_rows
