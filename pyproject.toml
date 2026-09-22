@@ -1,0 +1,17 @@
+[project]
+name = "doppelsort"
+version = "0.1.0"
+description = "A python CLI for matching an image to others to find a "doppelgänger""
+readme = "README.md"
+authors = [
+    { name = "Jesse Almanrode", email = "jesse@almanrode.com" }
+]
+requires-python = ">=3.14"
+dependencies = []
+
+[project.scripts]
+doppelsort = "doppelsort:main"
+
+[build-system]
+requires = ["uv_build>=0.12.16,<0.13.0"]
+build-backend = "uv_build"
