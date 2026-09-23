@@ -1,7 +1,7 @@
 # DoppelSort
 
 <p align="center">
-  <img src="logo.png" alt="DoppelSort logo" width="500" />
+  <img src="logo.png" alt="DoppelSort logo" />
 </p>
 
 DoppelSort is a Python CLI for scanning portrait directories, storing face embeddings in SQLite, and comparing faces by similarity or distance.
@@ -30,10 +30,10 @@ uv run doppelsort --help
 
 Available commands:
 
-- `scan`: scan one or more directories and build or extend a SQLite face index
+- `scan`: scan one or more directories and build or extend a SQLite face index while skipping exact duplicate images before DeepFace runs
 - `compare`: compare two portrait images directly and print similarity and distance scores
 - `match`: compare a source image against a SQLite face index and rank the closest matches
-- `db info`: print database summary statistics
+- `db info`: print database summary statistics including hash-based duplicate counts
 - `db optimize`: remove duplicate rows while keeping the earliest record for each unique image + embedding pair
 
 ## Build a face index
@@ -54,7 +54,40 @@ Options:
 - `--detector-backend`: face detection backend
 - `--overwrite / --append`: clear the database before indexing or append to the existing database
 
-The scan command indexes every detected face in each image. It stores compact `float32` embeddings as SQLite `BLOB` data for efficient matching and retrieval.
+The scan command indexes every detected face in each image while preserving image-level metadata for deduplication. It computes a SHA-256 `content_hash` for each file and a lightweight perceptual hash when possible. Exact duplicate files are skipped before the DeepFace embedding step, which reduces the GPU-heavy part of indexing substantially on folders that contain repeated or copied images.
+
+The index stores compact `float32` embeddings as SQLite `BLOB` data for efficient matching and retrieval.
+
+## SQLite schema and duplicate tracking
+
+The database records both image metadata and face metadata.
+
+Current image metadata includes:
+
+- `image_path`
+- `content_hash`
+- `perceptual_hash`
+- `timestamp`
+- `file_size`
+- `mtime`
+
+Current face metadata includes:
+
+- `id`
+- `image_path`
+- `bbox`
+- `embedding`
+- `embedding_norm`
+- `timestamp`
+- `content_hash`
+- `perceptual_hash`
+- `image_id`
+
+This lets the project distinguish between:
+
+- exact duplicate files (`content_hash` match)
+- near-duplicate files (`perceptual_hash` match)
+- repeated face entries caused by re-scanning the same image or multi-face detection within an image
 
 ## Compare two portraits directly
 
@@ -104,20 +137,16 @@ uv run doppelsort db optimize ./faces.db
 - `unique_images`: number of distinct image paths
 - `unique_embeddings`: number of distinct embedding vectors
 - `duplicate_rows`: number of rows that share the same image path and embedding
+- `unique_content_hashes`: number of distinct image content hashes
+- `duplicate_content_hashes`: number of duplicate content hashes across indexed images
 - `first_seen` / `last_seen`: earliest and latest insertion timestamps
 
 The difference between `unique_images` and `unique_embeddings` matters because a single image may contain multiple detected faces. If the same image is scanned repeatedly or resolves to more than one face, `unique_embeddings` can be greater than `unique_images`.
 
-`db optimize` removes duplicate face rows while keeping the earliest record for each unique image + embedding pair. It is useful after repeated scans or multi-face indexing when the same face got inserted multiple times.
+`db optimize` removes duplicate face rows while keeping the earliest record for each unique image + embedding pair. It is useful after repeated scans or multi-face indexing when the same face got inserted multiple times. Since exact duplicates are now tracked by `content_hash` and `image_id`, repeated image copies can be filtered before DeepFace indexing and cleaned up more predictably later.
 
 ## Notes
 
 - TensorFlow warns when no GPU is detected; the CLI prints a CPU warning in those environments.
-- The index records each face with:
-  - `id`
-  - `image_path`
-  - `bbox`
-  - `embedding`
-  - `embedding_norm`
-  - `timestamp`
-- This project targets Python 3.12 for compatibility with the current DeepFace/TensorFlow stack.
+- The scan path now performs a cheap image hash check before DeepFace extraction, which is the biggest performance win for duplicate-heavy photo collections.
+- The project targets Python 3.12 for compatibility with the current DeepFace/TensorFlow stack.
