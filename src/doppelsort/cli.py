@@ -119,15 +119,51 @@ def _compute_perceptual_hash(image_path: Path) -> str | None:
     return f"{hash_value:064x}"
 
 
+def _ensure_image_schema(conn: sqlite3.Connection) -> None:
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "images" not in tables:
+        conn.execute(
+            """
+            CREATE TABLE images (
+                id INTEGER PRIMARY KEY,
+                image_path TEXT NOT NULL UNIQUE,
+                content_hash TEXT,
+                perceptual_hash TEXT,
+                timestamp INTEGER NOT NULL,
+                file_size INTEGER,
+                mtime INTEGER
+            )
+            """
+        )
+
+    image_columns = {row[1] for row in conn.execute("PRAGMA table_info(images)").fetchall()}
+    if "content_hash" not in image_columns:
+        conn.execute("ALTER TABLE images ADD COLUMN content_hash TEXT")
+    if "perceptual_hash" not in image_columns:
+        conn.execute("ALTER TABLE images ADD COLUMN perceptual_hash TEXT")
+    if "timestamp" not in image_columns:
+        conn.execute("ALTER TABLE images ADD COLUMN timestamp INTEGER NOT NULL DEFAULT 0")
+    if "file_size" not in image_columns:
+        conn.execute("ALTER TABLE images ADD COLUMN file_size INTEGER")
+    if "mtime" not in image_columns:
+        conn.execute("ALTER TABLE images ADD COLUMN mtime INTEGER")
+
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_images_content_hash ON images(content_hash)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_images_perceptual_hash ON images(perceptual_hash)")
+
+
 def _ensure_face_schema(conn: sqlite3.Connection) -> None:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(faces)").fetchall()}
     if "content_hash" not in columns:
         conn.execute("ALTER TABLE faces ADD COLUMN content_hash TEXT")
     if "perceptual_hash" not in columns:
         conn.execute("ALTER TABLE faces ADD COLUMN perceptual_hash TEXT")
+    if "image_id" not in columns:
+        conn.execute("ALTER TABLE faces ADD COLUMN image_id INTEGER")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_faces_image_path ON faces(image_path)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_faces_content_hash ON faces(content_hash)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_faces_perceptual_hash ON faces(perceptual_hash)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_faces_image_id ON faces(image_id)")
 
 
 def _create_face_index_db(db_path: Path, *, overwrite: bool = False) -> sqlite3.Connection:
@@ -144,13 +180,16 @@ def _create_face_index_db(db_path: Path, *, overwrite: bool = False) -> sqlite3.
             embedding_norm REAL,
             timestamp INTEGER NOT NULL,
             content_hash TEXT,
-            perceptual_hash TEXT
+            perceptual_hash TEXT,
+            image_id INTEGER
         )
         """
     )
+    _ensure_image_schema(conn)
     _ensure_face_schema(conn)
     if overwrite:
         conn.execute("DELETE FROM faces")
+        conn.execute("DELETE FROM images")
     return conn
 
 
@@ -175,13 +214,40 @@ def _index_target_directory_into_conn(
         for image_path in progress:
             content_hash = _compute_content_hash(image_path)
             perceptual_hash = _compute_perceptual_hash(image_path)
+            file_stat = image_path.stat()
 
-            existing = conn.execute(
-                "SELECT 1 FROM faces WHERE content_hash = ? LIMIT 1",
+            existing_image = conn.execute(
+                "SELECT id FROM images WHERE content_hash = ? LIMIT 1",
                 (content_hash,),
             ).fetchone()
-            if content_hash and existing is not None:
+            if content_hash and existing_image is not None:
                 continue
+
+            image_record = conn.execute(
+                """
+                INSERT INTO images (image_path, content_hash, perceptual_hash, timestamp, file_size, mtime)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(image_path) DO UPDATE SET
+                    content_hash = excluded.content_hash,
+                    perceptual_hash = excluded.perceptual_hash,
+                    timestamp = excluded.timestamp,
+                    file_size = excluded.file_size,
+                    mtime = excluded.mtime
+                """,
+                (
+                    str(image_path),
+                    content_hash,
+                    perceptual_hash,
+                    int(time.time()),
+                    file_stat.st_size,
+                    int(file_stat.st_mtime),
+                ),
+            )
+            image_id = conn.execute(
+                "SELECT id FROM images WHERE image_path = ? LIMIT 1",
+                (str(image_path),),
+            ).fetchone()
+            image_id_value = int(image_id[0]) if image_id is not None else None
 
             try:
                 faces = _extract_face_entries(image_path, model_name=model_name, detector_backend=detector_backend)
@@ -194,8 +260,8 @@ def _index_target_directory_into_conn(
                 embedding_blob = _serialize_embedding(embedding)
                 conn.execute(
                     """
-                    INSERT INTO faces (image_path, bbox, embedding, embedding_norm, timestamp, content_hash, perceptual_hash)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO faces (image_path, bbox, embedding, embedding_norm, timestamp, content_hash, perceptual_hash, image_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         str(image_path),
@@ -205,6 +271,7 @@ def _index_target_directory_into_conn(
                         int(time.time()),
                         content_hash,
                         perceptual_hash,
+                        image_id_value,
                     ),
                 )
                 inserted_rows += 1
@@ -477,7 +544,11 @@ def get_db_summary(db_path: Path) -> dict[str, int | str | None]:
 
     conn = sqlite3.connect(db_path)
     try:
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(faces)").fetchall()}
+        face_columns = {row[1] for row in conn.execute("PRAGMA table_info(faces)").fetchall()}
+        image_columns = {row[1] for row in conn.execute("PRAGMA table_info(images)").fetchall()} if "images" in {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        } else set()
+
         row_count = conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0]
         unique_images = conn.execute("SELECT COUNT(DISTINCT image_path) FROM faces").fetchone()[0]
         unique_embeddings = conn.execute("SELECT COUNT(DISTINCT embedding) FROM faces").fetchone()[0]
@@ -486,12 +557,19 @@ def get_db_summary(db_path: Path) -> dict[str, int | str | None]:
         ).fetchone()[0]
         unique_content_hashes = None
         duplicate_content_hashes = None
-        if "content_hash" in columns:
+        if "content_hash" in face_columns:
             unique_content_hashes = conn.execute(
                 "SELECT COUNT(DISTINCT content_hash) FROM faces WHERE content_hash IS NOT NULL"
             ).fetchone()[0]
             duplicate_content_hashes = conn.execute(
                 "SELECT COUNT(*) FROM (SELECT content_hash, COUNT(*) AS dup_count FROM faces WHERE content_hash IS NOT NULL GROUP BY content_hash HAVING dup_count > 1)"
+            ).fetchone()[0]
+        if "content_hash" in image_columns:
+            unique_content_hashes = conn.execute(
+                "SELECT COUNT(DISTINCT content_hash) FROM images WHERE content_hash IS NOT NULL"
+            ).fetchone()[0]
+            duplicate_content_hashes = conn.execute(
+                "SELECT COUNT(*) FROM (SELECT content_hash, COUNT(*) AS dup_count FROM images WHERE content_hash IS NOT NULL GROUP BY content_hash HAVING dup_count > 1)"
             ).fetchone()[0]
         timestamp_min = conn.execute("SELECT MIN(timestamp) FROM faces").fetchone()[0]
         timestamp_max = conn.execute("SELECT MAX(timestamp) FROM faces").fetchone()[0]
