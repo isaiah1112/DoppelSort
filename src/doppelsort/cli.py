@@ -113,12 +113,12 @@ def _create_face_index_db(db_path: Path, *, overwrite: bool = False) -> sqlite3.
     return conn
 
 
-def index_target_directory(
+def _index_target_directory_into_conn(
+    conn: sqlite3.Connection,
     target_dir: Path,
-    db_path: Path,
-    model_name: str = "ArcFace",
-    detector_backend: str = "retinaface",
-    overwrite: bool = True,
+    *,
+    model_name: str,
+    detector_backend: str,
 ) -> int:
     if not target_dir.exists():
         raise FileNotFoundError(f"Target directory not found: {target_dir}")
@@ -129,35 +129,77 @@ def index_target_directory(
     if not candidates:
         raise ValueError(f"No supported image files were found in {target_dir}")
 
+    inserted_rows = 0
+    with click.progressbar(candidates, label=f"Indexing {target_dir.name}") as progress:
+        for image_path in progress:
+            try:
+                faces = _extract_face_entries(image_path, model_name=model_name, detector_backend=detector_backend)
+            except Exception:
+                continue
+
+            for face in faces:
+                embedding = face["embedding"]
+                bbox = face["bbox"]
+                embedding_blob = _serialize_embedding(embedding)
+                conn.execute(
+                    """
+                    INSERT INTO faces (image_path, bbox, embedding, embedding_norm, timestamp)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(image_path),
+                        json.dumps(bbox, sort_keys=True),
+                        embedding_blob,
+                        float(np.linalg.norm(embedding)),
+                        int(time.time()),
+                    ),
+                )
+                inserted_rows += 1
+
+    return inserted_rows
+
+
+def index_target_directory(
+    target_dir: Path,
+    db_path: Path,
+    model_name: str = "ArcFace",
+    detector_backend: str = "retinaface",
+    overwrite: bool = True,
+) -> int:
+    conn = _create_face_index_db(db_path, overwrite=overwrite)
+    try:
+        inserted_rows = _index_target_directory_into_conn(
+            conn,
+            target_dir,
+            model_name=model_name,
+            detector_backend=detector_backend,
+        )
+        conn.commit()
+        return inserted_rows
+    finally:
+        conn.close()
+
+
+def index_target_directories(
+    target_dirs: list[Path],
+    db_path: Path,
+    model_name: str = "ArcFace",
+    detector_backend: str = "retinaface",
+    overwrite: bool = True,
+) -> int:
+    if not target_dirs:
+        raise ValueError("At least one target directory is required.")
+
     conn = _create_face_index_db(db_path, overwrite=overwrite)
     inserted_rows = 0
     try:
-        with click.progressbar(candidates, label="Indexing faces") as progress:
-            for image_path in progress:
-                try:
-                    faces = _extract_face_entries(image_path, model_name=model_name, detector_backend=detector_backend)
-                except Exception:
-                    continue
-
-                for face in faces:
-                    embedding = face["embedding"]
-                    bbox = face["bbox"]
-                    embedding_blob = _serialize_embedding(embedding)
-                    conn.execute(
-                        """
-                        INSERT INTO faces (image_path, bbox, embedding, embedding_norm, timestamp)
-                        VALUES (?, ?, ?, ?, ?)
-                        """,
-                        (
-                            str(image_path),
-                            json.dumps(bbox, sort_keys=True),
-                            embedding_blob,
-                            float(np.linalg.norm(embedding)),
-                            int(time.time()),
-                        ),
-                    )
-                    inserted_rows += 1
-
+        for target_dir in target_dirs:
+            inserted_rows += _index_target_directory_into_conn(
+                conn,
+                target_dir,
+                model_name=model_name,
+                detector_backend=detector_backend,
+            )
         conn.commit()
         return inserted_rows
     finally:
@@ -337,7 +379,7 @@ def main() -> None:
 
 
 @main.command("scan")
-@click.argument("target_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument("target_dirs", nargs=-1, type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option(
     "--db-path",
     default="faces.db",
@@ -365,17 +407,20 @@ def main() -> None:
     help="Clear the existing index before scanning or append new faces to the database.",
 )
 def scan(
-    target_dir: Path,
+    target_dirs: tuple[Path, ...],
     db_path: Path,
     model_name: str,
     detector_backend: str,
     overwrite: bool,
 ) -> None:
-    """Scan a directory of portraits and create a SQLite face index."""
+    """Scan one or more directories of portraits and create or extend a SQLite face index."""
     _warn_if_cpu_only()
+    if not target_dirs:
+        raise click.UsageError("At least one target directory is required.")
+
     try:
-        inserted = index_target_directory(
-            target_dir=target_dir,
+        inserted = index_target_directories(
+            target_dirs=list(target_dirs),
             db_path=db_path,
             model_name=model_name,
             detector_backend=detector_backend,

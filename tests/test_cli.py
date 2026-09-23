@@ -71,6 +71,58 @@ def test_warns_when_tensorflow_is_cpu_only(monkeypatch, tmp_path) -> None:
     assert "GPU" in result.output
 
 
+def test_scan_can_append_multiple_target_directories(tmp_path, monkeypatch) -> None:
+    target_dir_1 = tmp_path / "dir1"
+    target_dir_2 = tmp_path / "dir2"
+    target_dir_1.mkdir()
+    target_dir_2.mkdir()
+    (target_dir_1 / "a.jpg").write_bytes(b"a")
+    (target_dir_2 / "b.jpg").write_bytes(b"b")
+
+    db_path = tmp_path / "faces.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE faces (
+            id INTEGER PRIMARY KEY,
+            image_path TEXT NOT NULL,
+            bbox TEXT NOT NULL,
+            embedding BLOB NOT NULL,
+            embedding_norm REAL,
+            timestamp INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO faces (image_path, bbox, embedding, embedding_norm, timestamp) VALUES (?, ?, ?, ?, ?)",
+        (
+            str(target_dir_1 / "existing.jpg"),
+            '{"x": 1, "y": 2, "w": 3, "h": 4}',
+            np.array([1.0, 0.0, 0.0], dtype=np.float32).tobytes(),
+            1.0,
+            123,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(
+        "doppelsort.cli._extract_face_entries",
+        lambda *args, **kwargs: [{"embedding": np.array([1.0, 0.0, 0.0], dtype=np.float32), "bbox": {"x": 0, "y": 0, "w": 1, "h": 1}}],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["scan", str(target_dir_1), str(target_dir_2), "--db-path", str(db_path), "--append"])
+
+    assert result.exit_code == 0
+    assert "Indexed 2 faces" in result.output
+
+    conn = sqlite3.connect(db_path)
+    count = conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0]
+    conn.close()
+    assert count == 3
+
+
 def test_match_supports_distance_sorting(tmp_path, monkeypatch) -> None:
     source_path = tmp_path / "source.jpg"
     source_path.write_bytes(b"source")
