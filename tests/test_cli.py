@@ -25,6 +25,91 @@ def test_scan_command_help_renders() -> None:
     assert "--db-path" in result.output
 
 
+def test_db_info_renders_summary(tmp_path) -> None:
+    db_path = tmp_path / "faces.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE faces (
+            id INTEGER PRIMARY KEY,
+            image_path TEXT NOT NULL,
+            bbox TEXT NOT NULL,
+            embedding BLOB NOT NULL,
+            embedding_norm REAL,
+            timestamp INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO faces (image_path, bbox, embedding, embedding_norm, timestamp) VALUES (?, ?, ?, ?, ?)",
+        (
+            "/tmp/a.jpg",
+            '{"x": 1, "y": 2, "w": 3, "h": 4}',
+            np.array([1.0, 0.0, 0.0], dtype=np.float32).tobytes(),
+            1.0,
+            123,
+        ),
+    )
+    conn.execute(
+        "INSERT INTO faces (image_path, bbox, embedding, embedding_norm, timestamp) VALUES (?, ?, ?, ?, ?)",
+        (
+            "/tmp/b.jpg",
+            '{"x": 1, "y": 2, "w": 3, "h": 4}',
+            np.array([0.0, 1.0, 0.0], dtype=np.float32).tobytes(),
+            1.0,
+            456,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["db", "info", str(db_path)])
+
+    assert result.exit_code == 0
+    assert "rows" in result.output.lower()
+    assert "2" in result.output
+
+
+def test_db_optimize_removes_duplicate_rows(tmp_path) -> None:
+    db_path = tmp_path / "faces.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE faces (
+            id INTEGER PRIMARY KEY,
+            image_path TEXT NOT NULL,
+            bbox TEXT NOT NULL,
+            embedding BLOB NOT NULL,
+            embedding_norm REAL,
+            timestamp INTEGER NOT NULL
+        )
+        """
+    )
+    duplicate = np.array([1.0, 0.0, 0.0], dtype=np.float32).tobytes()
+    conn.execute(
+        "INSERT INTO faces (image_path, bbox, embedding, embedding_norm, timestamp) VALUES (?, ?, ?, ?, ?)",
+        ("/tmp/a.jpg", '{"x": 1, "y": 2, "w": 3, "h": 4}', duplicate, 1.0, 123),
+    )
+    conn.execute(
+        "INSERT INTO faces (image_path, bbox, embedding, embedding_norm, timestamp) VALUES (?, ?, ?, ?, ?)",
+        ("/tmp/a.jpg", '{"x": 1, "y": 2, "w": 3, "h": 4}', duplicate, 1.0, 456),
+    )
+    conn.commit()
+    conn.close()
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["db", "optimize", str(db_path)])
+
+    assert result.exit_code == 0
+    assert "1" in result.output
+
+    conn = sqlite3.connect(db_path)
+    count = conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0]
+    conn.close()
+    assert count == 1
+
+
 def test_warns_when_tensorflow_is_cpu_only(monkeypatch, tmp_path) -> None:
     source_path = tmp_path / "source.jpg"
     source_path.write_bytes(b"source")

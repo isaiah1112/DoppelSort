@@ -369,6 +369,59 @@ def find_top_matches(
     return matches[:top_n]
 
 
+def get_db_summary(db_path: Path) -> dict[str, int | str | None]:
+    if not db_path.exists():
+        raise FileNotFoundError(f"Face database not found: {db_path}")
+
+    conn = sqlite3.connect(db_path)
+    try:
+        row_count = conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0]
+        unique_images = conn.execute("SELECT COUNT(DISTINCT image_path) FROM faces").fetchone()[0]
+        unique_embeddings = conn.execute("SELECT COUNT(DISTINCT embedding) FROM faces").fetchone()[0]
+        duplicate_rows = conn.execute(
+            "SELECT COUNT(*) FROM (SELECT image_path, embedding, COUNT(*) AS dup_count FROM faces GROUP BY image_path, embedding HAVING dup_count > 1)"
+        ).fetchone()[0]
+        timestamp_min = conn.execute("SELECT MIN(timestamp) FROM faces").fetchone()[0]
+        timestamp_max = conn.execute("SELECT MAX(timestamp) FROM faces").fetchone()[0]
+    finally:
+        conn.close()
+
+    return {
+        "rows": int(row_count),
+        "unique_images": int(unique_images),
+        "unique_embeddings": int(unique_embeddings),
+        "duplicate_rows": int(duplicate_rows),
+        "first_seen": int(timestamp_min) if timestamp_min is not None else None,
+        "last_seen": int(timestamp_max) if timestamp_max is not None else None,
+    }
+
+
+def optimize_db(db_path: Path) -> dict[str, int | str]:
+    if not db_path.exists():
+        raise FileNotFoundError(f"Face database not found: {db_path}")
+
+    conn = sqlite3.connect(db_path)
+    try:
+        before_rows = conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0]
+        duplicate_rows = conn.execute(
+            "SELECT COUNT(*) FROM (SELECT id FROM faces WHERE id NOT IN (SELECT MIN(id) FROM faces GROUP BY image_path, embedding))"
+        ).fetchone()[0]
+
+        conn.execute(
+            "DELETE FROM faces WHERE id NOT IN (SELECT MIN(id) FROM faces GROUP BY image_path, embedding)"
+        )
+        conn.commit()
+        after_rows = conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0]
+    finally:
+        conn.close()
+
+    return {
+        "removed_rows": int(before_rows - after_rows),
+        "duplicate_rows": int(duplicate_rows),
+        "rows_after": int(after_rows),
+    }
+
+
 @click.group(
     context_settings={"help_option_names": ["-h", "--help"]},
     help="Match a source portrait against indexed candidate faces or build a face index from a target directory.",
@@ -376,6 +429,45 @@ def find_top_matches(
 def main() -> None:
     """CLI entry point for indexing and matching portraits."""
     return
+
+
+@main.group("db")
+def db() -> None:
+    """Inspect or maintain the SQLite face index."""
+    return
+
+
+@db.command("info")
+@click.argument("db_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+def db_info(db_path: Path) -> None:
+    """Print summary information about the face database."""
+    try:
+        summary = get_db_summary(db_path)
+    except FileNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    click.echo(f"Database: {db_path}")
+    click.echo(f"rows: {summary['rows']}")
+    click.echo(f"unique_images: {summary['unique_images']}")
+    click.echo(f"unique_embeddings: {summary['unique_embeddings']}")
+    click.echo(f"duplicate_rows: {summary['duplicate_rows']}")
+    if summary["first_seen"] is not None:
+        click.echo(f"first_seen: {summary['first_seen']}")
+    if summary["last_seen"] is not None:
+        click.echo(f"last_seen: {summary['last_seen']}")
+
+
+@db.command("optimize")
+@click.argument("db_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+def db_optimize(db_path: Path) -> None:
+    """Remove duplicate face rows while keeping the earliest record for each image + embedding."""
+    try:
+        result = optimize_db(db_path)
+    except FileNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    click.echo(f"Removed {result['removed_rows']} duplicate rows from {db_path}")
+    click.echo(f"Rows after optimization: {result['rows_after']}")
 
 
 @main.command("scan")
