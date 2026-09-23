@@ -207,12 +207,25 @@ def _to_distance_percent(similarity: float) -> float:
     return round(max(0.0, min(100.0, (1.0 - float(similarity)) * 100.0)), 2)
 
 
+def _sort_match_rows(rows: list[dict[str, object]], sort_by: str) -> list[dict[str, object]]:
+    normalized_sort = sort_by.lower()
+    if normalized_sort not in {"similarity", "distance"}:
+        raise ValueError("sort_by must be either 'similarity' or 'distance'")
+
+    if normalized_sort == "distance":
+        # Lower distance is better when ranking by distance.
+        return sorted(rows, key=lambda item: (float(item["_raw_distance"]), -float(item["_raw_similarity"])))
+
+    return sorted(rows, key=lambda item: (-float(item["_raw_similarity"]), float(item["_raw_distance"])))
+
+
 def match_source_to_db(
     source_image: Path,
     db_path: Path,
     top_n: int = 5,
     model_name: str = "ArcFace",
     detector_backend: str = "retinaface",
+    sort_by: str = "similarity",
 ) -> list[dict[str, object]]:
     if not source_image.exists():
         raise FileNotFoundError(f"Source image not found: {source_image}")
@@ -249,7 +262,8 @@ def match_source_to_db(
             }
         )
 
-    scored_matches.sort(key=lambda item: (float(item["_raw_distance"]), -float(item["_raw_similarity"])))
+    scored_matches = _sort_match_rows(scored_matches, sort_by)
+
     for item in scored_matches:
         item.pop("_raw_distance", None)
         item.pop("_raw_similarity", None)
@@ -262,6 +276,7 @@ def find_top_matches(
     top_n: int = 5,
     model_name: str = "ArcFace",
     detector_backend: str = "retinaface",
+    sort_by: str = "similarity",
 ) -> list[dict[str, object]]:
     if not source_image.exists():
         raise FileNotFoundError(f"Source image not found: {source_image}")
@@ -304,7 +319,8 @@ def find_top_matches(
             "No valid face matches were found. Check that the source and target images contain detectable faces."
         )
 
-    matches.sort(key=lambda item: (float(item["_raw_distance"]), -float(item["_raw_similarity"])))
+    matches = _sort_match_rows(matches, sort_by)
+
     for item in matches:
         item.pop("_raw_distance", None)
         item.pop("_raw_similarity", None)
@@ -400,6 +416,11 @@ def scan(
     help="Detector backend used to find the face in the source image.",
 )
 @click.option(
+    "--by-similarity/--by-distance",
+    default=True,
+    help="Rank matches by the highest similarity score or the lowest distance value (lower distance is better).",
+)
+@click.option(
     "--json",
     is_flag=True,
     default=False,
@@ -411,10 +432,12 @@ def match(
     top_n: int,
     model_name: str,
     detector_backend: str,
+    by_similarity: bool,
     json: bool,
 ) -> None:
     """Match a source portrait against faces already indexed in SQLite."""
     _warn_if_cpu_only()
+    sort_by = "similarity" if by_similarity else "distance"
     try:
         results = match_source_to_db(
             source_image=source_image,
@@ -422,6 +445,7 @@ def match(
             top_n=top_n,
             model_name=model_name,
             detector_backend=detector_backend,
+            sort_by=sort_by,
         )
     except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc
