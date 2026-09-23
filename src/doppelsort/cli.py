@@ -13,6 +13,24 @@ from deepface import DeepFace
 SUPPORTED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
 
+def _warn_if_cpu_only() -> None:
+    try:
+        import tensorflow as tf
+    except Exception:
+        return
+
+    try:
+        gpus = tf.config.list_physical_devices("GPU")
+    except (AttributeError, RuntimeError, ValueError):
+        gpus = []
+
+    if not gpus:
+        click.echo(
+            "Warning: TensorFlow is running on CPU because no GPU device was detected. Performance may be slower.",
+            err=True,
+        )
+
+
 def _list_candidate_images(target_dir: Path) -> list[Path]:
     return sorted(
         (
@@ -338,6 +356,7 @@ def scan(
     overwrite: bool,
 ) -> None:
     """Scan a directory of portraits and create a SQLite face index."""
+    _warn_if_cpu_only()
     try:
         inserted = index_target_directory(
             target_dir=target_dir,
@@ -395,6 +414,7 @@ def match(
     json: bool,
 ) -> None:
     """Match a source portrait against faces already indexed in SQLite."""
+    _warn_if_cpu_only()
     try:
         results = match_source_to_db(
             source_image=source_image,
