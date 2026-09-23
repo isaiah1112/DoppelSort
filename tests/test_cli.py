@@ -87,3 +87,5 @@ def test_match_uses_sqlite_database(tmp_path, monkeypatch) -> None:
     assert "a.jpg" in result.output
     assert "b.jpg" in result.output
     assert "c.jpg" not in result.output
+    assert "%" in result.output
+    assert "similarity=" in result.output

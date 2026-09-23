@@ -181,6 +181,14 @@ def _load_db_faces(db_path: Path) -> list[dict[str, Any]]:
     return faces
 
 
+def _to_similarity_percent(similarity: float) -> float:
+    return round(max(0.0, min(100.0, float(similarity) * 100.0)), 2)
+
+
+def _to_distance_percent(similarity: float) -> float:
+    return round(max(0.0, min(100.0, (1.0 - float(similarity)) * 100.0)), 2)
+
+
 def match_source_to_db(
     source_image: Path,
     db_path: Path,
@@ -216,12 +224,17 @@ def match_source_to_db(
                 "id": record["id"],
                 "path": record["path"],
                 "bbox": record["bbox"],
-                "distance": round(distance, 6),
-                "similarity": round(similarity, 6),
+                "distance": _to_distance_percent(similarity),
+                "similarity": _to_similarity_percent(similarity),
+                "_raw_distance": distance,
+                "_raw_similarity": similarity,
             }
         )
 
-    scored_matches.sort(key=lambda item: (float(item["distance"]), -float(item["similarity"])))
+    scored_matches.sort(key=lambda item: (float(item["_raw_distance"]), -float(item["_raw_similarity"])))
+    for item in scored_matches:
+        item.pop("_raw_distance", None)
+        item.pop("_raw_similarity", None)
     return scored_matches[:top_n]
 
 
@@ -261,8 +274,10 @@ def find_top_matches(
         matches.append(
             {
                 "path": str(target_image),
-                "distance": round(distance, 6),
-                "similarity": round(similarity, 6),
+                "distance": _to_distance_percent(similarity),
+                "similarity": _to_similarity_percent(similarity),
+                "_raw_distance": distance,
+                "_raw_similarity": similarity,
             }
         )
 
@@ -271,7 +286,10 @@ def find_top_matches(
             "No valid face matches were found. Check that the source and target images contain detectable faces."
         )
 
-    matches.sort(key=lambda item: (float(item["distance"]), -float(item["similarity"])))
+    matches.sort(key=lambda item: (float(item["_raw_distance"]), -float(item["_raw_similarity"])))
+    for item in matches:
+        item.pop("_raw_distance", None)
+        item.pop("_raw_similarity", None)
     return matches[:top_n]
 
 
@@ -393,7 +411,7 @@ def match(
         return
 
     for idx, result in enumerate(results, start=1):
-        click.echo(f"{idx}. {result['path']} | distance={result['distance']} | similarity={result['similarity']}")
+        click.echo(f"{idx}. {result['path']} | distance={result['distance']}% | similarity={result['similarity']}%")
 
 
 if __name__ == "__main__":
