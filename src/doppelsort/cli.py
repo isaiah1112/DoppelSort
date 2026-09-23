@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import time
@@ -91,6 +92,44 @@ def _deserialize_embedding(blob: bytes) -> np.ndarray:
     return np.frombuffer(blob, dtype=np.float32).copy()
 
 
+def _compute_content_hash(image_path: Path) -> str:
+    digest = hashlib.sha256()
+    with image_path.open("rb") as image_file:
+        for chunk in iter(lambda: image_file.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _compute_perceptual_hash(image_path: Path) -> str | None:
+    try:
+        from PIL import Image
+    except Exception:
+        return None
+
+    try:
+        with Image.open(image_path) as image:
+            image = image.convert("L").resize((8, 8), getattr(Image, "Resampling", Image).LANCZOS)
+            pixels = np.asarray(image, dtype=np.float32)
+    except Exception:
+        return None
+
+    mean_value = float(pixels.mean())
+    bits = (pixels > mean_value).astype(np.uint8).flatten()
+    hash_value = int("".join(str(bit) for bit in bits), 2)
+    return f"{hash_value:064x}"
+
+
+def _ensure_face_schema(conn: sqlite3.Connection) -> None:
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(faces)").fetchall()}
+    if "content_hash" not in columns:
+        conn.execute("ALTER TABLE faces ADD COLUMN content_hash TEXT")
+    if "perceptual_hash" not in columns:
+        conn.execute("ALTER TABLE faces ADD COLUMN perceptual_hash TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_faces_image_path ON faces(image_path)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_faces_content_hash ON faces(content_hash)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_faces_perceptual_hash ON faces(perceptual_hash)")
+
+
 def _create_face_index_db(db_path: Path, *, overwrite: bool = False) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
@@ -103,11 +142,13 @@ def _create_face_index_db(db_path: Path, *, overwrite: bool = False) -> sqlite3.
             bbox TEXT NOT NULL,
             embedding BLOB NOT NULL,
             embedding_norm REAL,
-            timestamp INTEGER NOT NULL
+            timestamp INTEGER NOT NULL,
+            content_hash TEXT,
+            perceptual_hash TEXT
         )
         """
     )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_faces_image_path ON faces(image_path)")
+    _ensure_face_schema(conn)
     if overwrite:
         conn.execute("DELETE FROM faces")
     return conn
@@ -132,6 +173,16 @@ def _index_target_directory_into_conn(
     inserted_rows = 0
     with click.progressbar(candidates, label=f"Indexing {target_dir.name}") as progress:
         for image_path in progress:
+            content_hash = _compute_content_hash(image_path)
+            perceptual_hash = _compute_perceptual_hash(image_path)
+
+            existing = conn.execute(
+                "SELECT 1 FROM faces WHERE content_hash = ? LIMIT 1",
+                (content_hash,),
+            ).fetchone()
+            if content_hash and existing is not None:
+                continue
+
             try:
                 faces = _extract_face_entries(image_path, model_name=model_name, detector_backend=detector_backend)
             except Exception:
@@ -143,8 +194,8 @@ def _index_target_directory_into_conn(
                 embedding_blob = _serialize_embedding(embedding)
                 conn.execute(
                     """
-                    INSERT INTO faces (image_path, bbox, embedding, embedding_norm, timestamp)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO faces (image_path, bbox, embedding, embedding_norm, timestamp, content_hash, perceptual_hash)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         str(image_path),
@@ -152,6 +203,8 @@ def _index_target_directory_into_conn(
                         embedding_blob,
                         float(np.linalg.norm(embedding)),
                         int(time.time()),
+                        content_hash,
+                        perceptual_hash,
                     ),
                 )
                 inserted_rows += 1
@@ -424,12 +477,22 @@ def get_db_summary(db_path: Path) -> dict[str, int | str | None]:
 
     conn = sqlite3.connect(db_path)
     try:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(faces)").fetchall()}
         row_count = conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0]
         unique_images = conn.execute("SELECT COUNT(DISTINCT image_path) FROM faces").fetchone()[0]
         unique_embeddings = conn.execute("SELECT COUNT(DISTINCT embedding) FROM faces").fetchone()[0]
         duplicate_rows = conn.execute(
             "SELECT COUNT(*) FROM (SELECT image_path, embedding, COUNT(*) AS dup_count FROM faces GROUP BY image_path, embedding HAVING dup_count > 1)"
         ).fetchone()[0]
+        unique_content_hashes = None
+        duplicate_content_hashes = None
+        if "content_hash" in columns:
+            unique_content_hashes = conn.execute(
+                "SELECT COUNT(DISTINCT content_hash) FROM faces WHERE content_hash IS NOT NULL"
+            ).fetchone()[0]
+            duplicate_content_hashes = conn.execute(
+                "SELECT COUNT(*) FROM (SELECT content_hash, COUNT(*) AS dup_count FROM faces WHERE content_hash IS NOT NULL GROUP BY content_hash HAVING dup_count > 1)"
+            ).fetchone()[0]
         timestamp_min = conn.execute("SELECT MIN(timestamp) FROM faces").fetchone()[0]
         timestamp_max = conn.execute("SELECT MAX(timestamp) FROM faces").fetchone()[0]
     finally:
@@ -440,6 +503,8 @@ def get_db_summary(db_path: Path) -> dict[str, int | str | None]:
         "unique_images": int(unique_images),
         "unique_embeddings": int(unique_embeddings),
         "duplicate_rows": int(duplicate_rows),
+        "unique_content_hashes": int(unique_content_hashes) if unique_content_hashes is not None else None,
+        "duplicate_content_hashes": int(duplicate_content_hashes) if duplicate_content_hashes is not None else None,
         "first_seen": int(timestamp_min) if timestamp_min is not None else None,
         "last_seen": int(timestamp_max) if timestamp_max is not None else None,
     }
@@ -451,13 +516,15 @@ def optimize_db(db_path: Path) -> dict[str, int | str]:
 
     conn = sqlite3.connect(db_path)
     try:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(faces)").fetchall()}
         before_rows = conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0]
+        dedupe_key = "content_hash" if "content_hash" in columns else "image_path"
         duplicate_rows = conn.execute(
-            "SELECT COUNT(*) FROM (SELECT id FROM faces WHERE id NOT IN (SELECT MIN(id) FROM faces GROUP BY image_path, embedding))"
+            f"SELECT COUNT(*) FROM (SELECT id FROM faces WHERE id NOT IN (SELECT MIN(id) FROM faces GROUP BY {dedupe_key}, embedding))"
         ).fetchone()[0]
 
         conn.execute(
-            "DELETE FROM faces WHERE id NOT IN (SELECT MIN(id) FROM faces GROUP BY image_path, embedding)"
+            f"DELETE FROM faces WHERE id NOT IN (SELECT MIN(id) FROM faces GROUP BY {dedupe_key}, embedding)"
         )
         conn.commit()
         after_rows = conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0]
@@ -500,6 +567,10 @@ def db_info(db_path: Path) -> None:
     click.echo(f"unique_images: {summary['unique_images']}")
     click.echo(f"unique_embeddings: {summary['unique_embeddings']}")
     click.echo(f"duplicate_rows: {summary['duplicate_rows']}")
+    if summary["unique_content_hashes"] is not None:
+        click.echo(f"unique_content_hashes: {summary['unique_content_hashes']}")
+    if summary["duplicate_content_hashes"] is not None:
+        click.echo(f"duplicate_content_hashes: {summary['duplicate_content_hashes']}")
     if summary["first_seen"] is not None:
         click.echo(f"first_seen: {summary['first_seen']}")
     if summary["last_seen"] is not None:

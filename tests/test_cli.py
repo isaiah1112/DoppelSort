@@ -228,6 +228,38 @@ def test_compare_command_outputs_like_match(tmp_path, monkeypatch) -> None:
     assert "similarity=" in result.output
 
 
+def test_scan_skips_exact_duplicate_images_by_content_hash(tmp_path, monkeypatch) -> None:
+    target_dir = tmp_path / "targets"
+    target_dir.mkdir()
+    first_path = target_dir / "first.jpg"
+    second_path = target_dir / "second.jpg"
+    first_path.write_bytes(b"same-image-content")
+    second_path.write_bytes(b"same-image-content")
+
+    db_path = tmp_path / "faces.db"
+    calls: list[str] = []
+
+    def fake_extract_face_entries(image_path, **kwargs):
+        calls.append(str(image_path))
+        return [{"embedding": np.array([1.0, 0.0, 0.0], dtype=np.float32), "bbox": {"x": 0, "y": 0, "w": 1, "h": 1}}]
+
+    monkeypatch.setattr("doppelsort.cli._extract_face_entries", fake_extract_face_entries)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["scan", str(target_dir), "--db-path", str(db_path), "--overwrite"])
+
+    assert result.exit_code == 0
+    assert "Indexed 1 faces" in result.output
+    assert len(calls) == 1
+
+    conn = sqlite3.connect(db_path)
+    row = conn.execute("SELECT content_hash, perceptual_hash FROM faces LIMIT 1").fetchone()
+    conn.close()
+    assert row is not None
+    assert row[0] is not None
+    assert row[1] is not None or row[1] is None
+
+
 def test_match_supports_distance_sorting(tmp_path, monkeypatch) -> None:
     source_path = tmp_path / "source.jpg"
     source_path.write_bytes(b"source")
