@@ -210,6 +210,7 @@ def _index_target_directory_into_conn(
         raise ValueError(f"No supported image files were found in {target_dir}")
 
     inserted_rows = 0
+    pending_face_rows: list[tuple[str, str, bytes, float, int, str | None, str | None, int | None]] = []
     with click.progressbar(candidates, label=f"Indexing {target_dir.name}") as progress:
         for image_path in progress:
             content_hash = _compute_content_hash(image_path)
@@ -223,7 +224,7 @@ def _index_target_directory_into_conn(
             if content_hash and existing_image is not None:
                 continue
 
-            image_record = conn.execute(
+            conn.execute(
                 """
                 INSERT INTO images (image_path, content_hash, perceptual_hash, timestamp, file_size, mtime)
                 VALUES (?, ?, ?, ?, ?, ?)
@@ -243,11 +244,11 @@ def _index_target_directory_into_conn(
                     int(file_stat.st_mtime),
                 ),
             )
-            image_id = conn.execute(
+            image_row = conn.execute(
                 "SELECT id FROM images WHERE image_path = ? LIMIT 1",
                 (str(image_path),),
             ).fetchone()
-            image_id_value = int(image_id[0]) if image_id is not None else None
+            image_id_value = int(image_row[0]) if image_row is not None else None
 
             try:
                 faces = _extract_face_entries(image_path, model_name=model_name, detector_backend=detector_backend)
@@ -257,24 +258,40 @@ def _index_target_directory_into_conn(
             for face in faces:
                 embedding = face["embedding"]
                 bbox = face["bbox"]
-                embedding_blob = _serialize_embedding(embedding)
-                conn.execute(
-                    """
-                    INSERT INTO faces (image_path, bbox, embedding, embedding_norm, timestamp, content_hash, perceptual_hash, image_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
+                pending_face_rows.append(
                     (
                         str(image_path),
                         json.dumps(bbox, sort_keys=True),
-                        embedding_blob,
+                        _serialize_embedding(embedding),
                         float(np.linalg.norm(embedding)),
                         int(time.time()),
                         content_hash,
                         perceptual_hash,
                         image_id_value,
-                    ),
+                    )
                 )
-                inserted_rows += 1
+
+            if len(pending_face_rows) >= 128:
+                conn.executemany(
+                    """
+                    INSERT INTO faces (image_path, bbox, embedding, embedding_norm, timestamp, content_hash, perceptual_hash, image_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    pending_face_rows,
+                )
+                inserted_rows += len(pending_face_rows)
+                pending_face_rows.clear()
+
+    if pending_face_rows:
+        conn.executemany(
+            """
+            INSERT INTO faces (image_path, bbox, embedding, embedding_norm, timestamp, content_hash, perceptual_hash, image_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            pending_face_rows,
+        )
+        inserted_rows += len(pending_face_rows)
+        pending_face_rows.clear()
 
     return inserted_rows
 
