@@ -208,6 +208,26 @@ def test_scan_can_append_multiple_target_directories(tmp_path, monkeypatch) -> N
     assert count == 3
 
 
+def test_compare_command_outputs_like_match(tmp_path, monkeypatch) -> None:
+    source_path = tmp_path / "source.jpg"
+    target_path = tmp_path / "target.jpg"
+    source_path.write_bytes(b"source")
+    target_path.write_bytes(b"target")
+
+    monkeypatch.setattr(
+        "doppelsort.cli.DeepFace.represent",
+        lambda **kwargs: [{"embedding": np.array([1.0, 0.0, 0.0], dtype=np.float32)}],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["compare", str(source_path), str(target_path), "--by-distance"])
+
+    assert result.exit_code == 0
+    assert "target.jpg" in result.output
+    assert "distance=" in result.output
+    assert "similarity=" in result.output
+
+
 def test_match_supports_distance_sorting(tmp_path, monkeypatch) -> None:
     source_path = tmp_path / "source.jpg"
     source_path.write_bytes(b"source")

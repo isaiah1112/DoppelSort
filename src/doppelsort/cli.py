@@ -369,6 +369,55 @@ def find_top_matches(
     return matches[:top_n]
 
 
+def compare_images(
+    source_image: Path,
+    target_image: Path,
+    model_name: str = "ArcFace",
+    detector_backend: str = "retinaface",
+    sort_by: str = "similarity",
+) -> list[dict[str, object]]:
+    if not source_image.exists():
+        raise FileNotFoundError(f"Source image not found: {source_image}")
+    if not target_image.exists():
+        raise FileNotFoundError(f"Target image not found: {target_image}")
+
+    source_faces = _extract_face_entries(
+        image_path=source_image,
+        model_name=model_name,
+        detector_backend=detector_backend,
+    )
+    target_faces = _extract_face_entries(
+        image_path=target_image,
+        model_name=model_name,
+        detector_backend=detector_backend,
+    )
+    if not source_faces or not target_faces:
+        raise ValueError(
+            "No valid faces were detected in the source or target image. Check that both images contain detectable portraits."
+        )
+
+    source_embedding = np.mean(np.stack([face["embedding"] for face in source_faces]), axis=0).astype(np.float32)
+    target_embedding = np.mean(np.stack([face["embedding"] for face in target_faces]), axis=0).astype(np.float32)
+    distance = float(np.linalg.norm(source_embedding - target_embedding))
+    similarity = 1.0 / (1.0 + distance)
+
+    result: list[dict[str, object]] = [
+        {
+            "path": str(target_image),
+            "distance": _to_distance_percent(similarity),
+            "similarity": _to_similarity_percent(similarity),
+            "_raw_distance": distance,
+            "_raw_similarity": similarity,
+        }
+    ]
+
+    result = _sort_match_rows(result, sort_by)
+    for item in result:
+        item.pop("_raw_distance", None)
+        item.pop("_raw_similarity", None)
+    return result
+
+
 def get_db_summary(db_path: Path) -> dict[str, int | str | None]:
     if not db_path.exists():
         raise FileNotFoundError(f"Face database not found: {db_path}")
@@ -522,6 +571,63 @@ def scan(
         raise click.ClickException(str(exc)) from exc
 
     click.echo(f"Indexed {inserted} faces into {db_path}")
+
+
+@main.command("compare")
+@click.argument("source_image", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("target_image", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--model-name",
+    default="ArcFace",
+    show_default=True,
+    help="DeepFace embedding model to use for the comparison.",
+)
+@click.option(
+    "--detector-backend",
+    default="retinaface",
+    show_default=True,
+    type=click.Choice(["retinaface", "mtcnn", "opencv", "ssd", "dlib", "mediapipe"], case_sensitive=False),
+    help="Detector backend used to find faces in the source and target images.",
+)
+@click.option(
+    "--by-similarity/--by-distance",
+    default=True,
+    help="Rank the comparison by the highest similarity score or the lowest distance value (lower distance is better).",
+)
+@click.option(
+    "--json",
+    is_flag=True,
+    default=False,
+    help="Emit the result as JSON instead of a text row.",
+)
+def compare(
+    source_image: Path,
+    target_image: Path,
+    model_name: str,
+    detector_backend: str,
+    by_similarity: bool,
+    json: bool,
+) -> None:
+    """Compare two portraits and report their similarity and distance scores."""
+    _warn_if_cpu_only()
+    sort_by = "similarity" if by_similarity else "distance"
+    try:
+        results = compare_images(
+            source_image=source_image,
+            target_image=target_image,
+            model_name=model_name,
+            detector_backend=detector_backend,
+            sort_by=sort_by,
+        )
+    except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if json:
+        click.echo(json.dumps(results, indent=2))
+        return
+
+    for idx, result in enumerate(results, start=1):
+        click.echo(f"{idx}. {result['path']} | distance={result['distance']}% | similarity={result['similarity']}%")
 
 
 @main.command("match")
