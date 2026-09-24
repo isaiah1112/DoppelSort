@@ -337,7 +337,7 @@ def index_target_directories(
                 model_name=model_name,
                 detector_backend=detector_backend,
             )
-        conn.commit()
+            conn.commit()
         return inserted_rows
     finally:
         conn.close()

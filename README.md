@@ -56,6 +56,8 @@ Options:
 
 The scan command indexes every detected face in each image while preserving image-level metadata for deduplication. It computes a SHA-256 `content_hash` for each file and a lightweight perceptual hash when possible. Exact duplicate files are skipped before the DeepFace embedding step, which reduces the GPU-heavy part of indexing substantially on folders that contain repeated or copied images.
 
+When scanning multiple directories, the CLI commits progress after each directory completes. This keeps earlier results durable if a later directory fails or the scan is interrupted and restarted, without turning SQLite into a write hotspot for every individual face insert.
+
 The index stores compact `float32` embeddings as SQLite `BLOB` data for efficient matching and retrieval.
 
 ## SQLite schema and duplicate tracking
@@ -149,4 +151,5 @@ The difference between `unique_images` and `unique_embeddings` matters because a
 
 - TensorFlow warns when no GPU is detected; the CLI prints a CPU warning in those environments.
 - The scan path now performs a cheap image hash check before DeepFace extraction, which is the biggest performance win for duplicate-heavy photo collections.
+- Multi-directory scans are checkpointed per directory, so restarts retain previously completed work while still keeping database writes reasonably efficient.
 - The project targets Python 3.12 for compatibility with the current DeepFace/TensorFlow stack.

@@ -1,6 +1,7 @@
 import sqlite3
 
 import numpy as np
+import pytest
 import tensorflow as tf
 from click.testing import CliRunner
 
@@ -206,6 +207,42 @@ def test_scan_can_append_multiple_target_directories(tmp_path, monkeypatch) -> N
     count = conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0]
     conn.close()
     assert count == 3
+
+
+def test_index_target_directories_commits_after_each_directory(tmp_path, monkeypatch) -> None:
+    import doppelsort.cli as cli
+
+    dir1 = tmp_path / "dir1"
+    dir2 = tmp_path / "dir2"
+    dir1.mkdir()
+    dir2.mkdir()
+    (dir1 / "a.jpg").write_bytes(b"a")
+    (dir2 / "b.jpg").write_bytes(b"b")
+
+    db_path = tmp_path / "faces.db"
+
+    real_index = cli._index_target_directory_into_conn
+
+    def flaky_index(conn, target_dir, **kwargs):
+        inserted = real_index(conn, target_dir, **kwargs)
+        if target_dir.name == "dir2":
+            raise RuntimeError("simulated later-directory failure")
+        return inserted
+
+    monkeypatch.setattr(cli, "_index_target_directory_into_conn", flaky_index)
+    monkeypatch.setattr(
+        cli,
+        "_extract_face_entries",
+        lambda *args, **kwargs: [{"embedding": np.array([1.0, 0.0, 0.0], dtype=np.float32), "bbox": {"x": 0, "y": 0, "w": 1, "h": 1}}],
+    )
+
+    with pytest.raises(RuntimeError, match="later-directory failure"):
+        cli.index_target_directories([dir1, dir2], db_path)
+
+    conn = sqlite3.connect(db_path)
+    count = conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0]
+    conn.close()
+    assert count == 1
 
 
 def test_compare_command_outputs_like_match(tmp_path, monkeypatch) -> None:
