@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import os
 import sqlite3
 import time
 from pathlib import Path
@@ -9,6 +11,8 @@ from typing import Any
 
 import click
 import numpy as np
+
+os.environ.setdefault("DEEPFACE_LOG_LEVEL", str(logging.ERROR))
 from deepface import DeepFace
 
 SUPPORTED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}

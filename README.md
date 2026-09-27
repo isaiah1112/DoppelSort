@@ -22,6 +22,16 @@ uv pip install -e .
 doppelsort --help
 ```
 
+> DeepFace currently emits a deprecation warning about backend installation behavior. In newer versions, running `pip install deepface` by itself will no longer install a default backend automatically. If you are installing DeepFace directly or debugging environment issues, prefer one of the explicit backend installs:
+>
+> ```bash
+> pip install "deepface[tensorflow]"
+> # or
+> pip install "deepface[pytorch]"
+> ```
+>
+> This avoids the upcoming backend deprecation warning and prevents missing-module errors when a backend engine is not available.
+
 ## CLI overview
 
 ```bash
