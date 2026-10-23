@@ -12,7 +12,7 @@ dependencies = [
     "deepface[tensorflow]>=0.0.93",
     "pillow>=10.4.0",
     "tensorflow==2.16.2",
-    "tensorflow-metal==1.2.0",
+    "tensorflow-metal==1.2.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "tf-keras>=2.16.0",
 ]
 

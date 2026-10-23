@@ -200,7 +200,7 @@ dependencies = [
     { name = "deepface", extra = ["tensorflow"] },
     { name = "pillow" },
     { name = "tensorflow" },
-    { name = "tensorflow-metal" },
+    { name = "tensorflow-metal", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
     { name = "tf-keras" },
 ]
 
@@ -216,7 +216,7 @@ requires-dist = [
     { name = "deepface", extras = ["tensorflow"], specifier = ">=0.0.93" },
     { name = "pillow", specifier = ">=10.4.0" },
     { name = "tensorflow", specifier = "==2.16.2" },
-    { name = "tensorflow-metal", specifier = "==1.2.0" },
+    { name = "tensorflow-metal", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = "==1.2.0" },
     { name = "tf-keras", specifier = ">=2.16.0" },
 ]
 

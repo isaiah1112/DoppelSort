@@ -24,6 +24,12 @@ uv run python -m doppelsort --help
 
 The project pins TensorFlow to the version used by its current DeepFace stack;
 use `uv sync` rather than installing DeepFace or TensorFlow separately.
+On Apple Silicon macOS, uv also installs the optional TensorFlow Metal
+acceleration package. It is not installed on Linux or other architectures.
+
+The project is currently tested in GitHub Actions on Linux. TensorFlow Metal
+acceleration is available on Apple Silicon macOS; other OS and architecture
+combinations are not currently part of the project's tested support matrix.
 
 ## Tests and coverage
 
@@ -41,6 +47,22 @@ HTML report in `htmlcov/`, run:
 ```bash
 uv run pytest --cov-report=html
 ```
+
+## Contributing and releases
+
+Changes are made on short-lived branches and merged into `main` through pull
+requests after the GitHub Actions checks pass. Dependency changes should update
+both `pyproject.toml` and `uv.lock`; CI checks that the lockfile remains current.
+Configure a repository ruleset for `main` to require pull requests and the
+`Test (Python 3.12, Ubuntu)` status check, and to block force pushes and branch
+deletion.
+
+Releases use semantic versions and tags in the form `vMAJOR.MINOR.PATCH`.
+Update the project version in `pyproject.toml` and regenerate `uv.lock` in the
+release pull request. After that change is merged, create the matching tag on
+the resulting `main` commit. A GitHub Actions workflow checks the tag against
+the project version, builds the distributions, and opens a draft GitHub
+Release with generated release notes. Review the draft before publishing.
 
 ## CLI overview
 
