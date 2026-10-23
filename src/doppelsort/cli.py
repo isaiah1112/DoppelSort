@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-import json
+import json as json_module
 import logging
 import os
 import sqlite3
@@ -265,7 +265,7 @@ def _index_target_directory_into_conn(
                 pending_face_rows.append(
                     (
                         str(image_path),
-                        json.dumps(bbox, sort_keys=True),
+                        json_module.dumps(bbox, sort_keys=True),
                         _serialize_embedding(embedding),
                         float(np.linalg.norm(embedding)),
                         int(time.time()),
@@ -373,7 +373,7 @@ def _load_db_faces(db_path: Path) -> list[dict[str, Any]]:
             {
                 "id": record_id,
                 "path": image_path,
-                "bbox": json.loads(bbox_json) if bbox_json else {},
+                "bbox": json_module.loads(bbox_json) if bbox_json else {},
                 "embedding": arr.astype(np.float32),
                 "embedding_norm": float(embedding_norm) if embedding_norm is not None else float(np.linalg.norm(arr)),
             }
@@ -793,7 +793,7 @@ def compare(
         raise click.ClickException(str(exc)) from exc
 
     if json:
-        click.echo(json.dumps(results, indent=2))
+        click.echo(json_module.dumps(results, indent=2))
         return
 
     for idx, result in enumerate(results, start=1):
@@ -864,7 +864,7 @@ def match(
         raise click.ClickException(str(exc)) from exc
 
     if json:
-        click.echo(json.dumps(results, indent=2))
+        click.echo(json_module.dumps(results, indent=2))
         return
 
     for idx, result in enumerate(results, start=1):
