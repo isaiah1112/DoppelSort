@@ -25,6 +25,23 @@ uv run python -m doppelsort --help
 The project pins TensorFlow to the version used by its current DeepFace stack;
 use `uv sync` rather than installing DeepFace or TensorFlow separately.
 
+## Tests and coverage
+
+Install the development dependencies and run the unit tests with coverage:
+
+```bash
+uv sync --dev
+uv run pytest -q
+```
+
+Pytest reports line and branch coverage for `doppelsort` in the terminal,
+including lines and branches not exercised by the tests. To create a browsable
+HTML report in `htmlcov/`, run:
+
+```bash
+uv run pytest --cov-report=html
+```
+
 ## CLI overview
 
 ```bash

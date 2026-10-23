@@ -22,7 +22,20 @@ doppelsort = "doppelsort.cli:main"
 [dependency-groups]
 dev = [
     "pytest>=8.4.0",
+    "pytest-cov>=7.1.0",
 ]
+
+[tool.pytest.ini_options]
+addopts = "--cov=doppelsort --cov-report=term-missing"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["doppelsort"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
 
 [build-system]
 requires = ["uv_build>=0.12.16,<0.13.0"]
