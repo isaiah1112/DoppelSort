@@ -1,70 +1,33 @@
-# AGENTS.md
+# Project Guidelines
 
-This repository is managed with `uv` and uses a project-local `.venv` virtual environment. Follow these rules for all work in this repo.
+## Project design
 
-## Project overview
+- DoppelSort is a Python 3.12 CLI. The `doppelsort` command is registered in `pyproject.toml`; `src/doppelsort/__main__.py` also supports `uv run python -m doppelsort`.
+- `src/doppelsort/cli.py` contains the Click commands and face-indexing, comparison, and SQLite operations. Keep CLI changes consistent across command help, output, and the underlying functions.
+- The SQLite index stores face embeddings as `float32` BLOBs, with image and face metadata. Scanning computes a SHA-256 content hash and skips exact duplicate images before DeepFace extraction; multi-directory scans commit after each directory.
+- See [README.md](README.md) for installation, command usage, score semantics, and database details. Update it when user-facing behavior or commands change.
 
-- Python package: `doppelsort`
-- Source layout: `src/doppelsort/`
-- CLI entry point: `doppelsort`
-- Package metadata and dependencies are defined in `pyproject.toml`.
+## Environment and dependencies
 
-## Required environment and tooling
+- Use the repository-local `.venv` through `uv`; do not use system Python, another virtual environment, or bare `pip`.
+- Python is constrained to `>=3.12,<3.13` to match the current DeepFace/TensorFlow dependencies.
+- Sync the project and development dependencies with `uv sync --dev`.
+- Add or remove dependencies with `uv add`, `uv add --dev`, or `uv remove`; update `pyproject.toml` rather than editing `uv.lock` by hand.
 
-1. Use `uv` for all dependency, environment, and command execution tasks.
-2. Use the repository-local `.venv` as the active environment for local development and verification.
-3. Do not rely on the system Python, global `pip`, or a different virtualenv.
-4. Prefer `uv run ...` for commands that should execute inside the project environment.
-5. Prefer `source .venv/bin/activate` when a shell command needs an activated local environment.
+## Build and test
 
-## Standard commands
-
-Install or sync environment:
+Run commands from the repository root:
 
 ```bash
-uv sync
-```
-
-Run Python commands in the project environment:
-
-```bash
-uv run python ...
-```
-
-Run tests:
-
-```bash
+uv sync --dev
 uv run pytest -q
-```
-
-Run the CLI:
-
-```bash
 uv run doppelsort --help
 ```
 
-If you need the interpreter path directly:
+Tests live in `tests/`. Use pytest and Click's `CliRunner` for CLI behavior; use temporary SQLite databases and monkeypatched DeepFace calls so tests do not depend on model downloads or face-recognition inference.
 
-```bash
-.venv/bin/python
-```
+## Conventions
 
-## Dependency management rules
-
-- Add or update dependencies via `uv`, not `pip`.
-- Edit `pyproject.toml` for project dependencies and tool config.
-- Use `uv add <package>` for new runtime dependencies.
-- Use `uv add --dev <package>` for development dependencies.
-- Use `uv remove <package>` when removing dependencies.
-- Keep the project environment aligned with the repo by running `uv sync` after dependency changes.
-
-## Guardrails
-
-- Never install packages with bare `pip install ...` in this repository.
-- Never execute tests or scripts with plain `python` when the repo-managed environment is available.
-- Never create or use a different venv name for this project; the expected environment is `.venv` at the repo root.
-- For reproducible work, prefer `uv run` so the command is executed with the correct `.venv` settings automatically.
-
-## Local development expectations
-
-This project is intended to be run from the repo root. When you need to inspect or validate behavior, use the project environment created by `uv sync` and the `.venv` interpreter rather than a globally installed Python.
+- Keep implementation in the existing `src/doppelsort/` package and follow its type annotations and `Path`-based file handling.
+- Preserve SQLite compatibility with existing index files when changing schemas or queries.
+- Keep command options, defaults, and output aligned with the README and Click help.
