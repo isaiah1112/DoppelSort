@@ -8,29 +8,22 @@ DoppelSort is a Python CLI for scanning portrait directories, storing face embed
 
 ## Installation
 
-This project uses uv for dependency and environment management.
+Requires Python 3.12. Use uv to create the project environment and install the
+declared runtime dependencies, including DeepFace with its TensorFlow backend:
 
 ```bash
 uv sync --dev
 uv run doppelsort --help
 ```
 
-To install the package in the active environment:
+You can also invoke the CLI as a Python module:
 
 ```bash
-uv pip install -e .
-doppelsort --help
+uv run python -m doppelsort --help
 ```
 
-> DeepFace currently emits a deprecation warning about backend installation behavior. In newer versions, running `pip install deepface` by itself will no longer install a default backend automatically. If you are installing DeepFace directly or debugging environment issues, prefer one of the explicit backend installs:
->
-> ```bash
-> pip install "deepface[tensorflow]"
-> # or
-> pip install "deepface[pytorch]"
-> ```
->
-> This avoids the upcoming backend deprecation warning and prevents missing-module errors when a backend engine is not available.
+The project pins TensorFlow to the version used by its current DeepFace stack;
+use `uv sync` rather than installing DeepFace or TensorFlow separately.
 
 ## CLI overview
 
@@ -44,7 +37,7 @@ Available commands:
 - `compare`: compare two portrait images directly and print similarity and distance scores
 - `match`: compare a source image against a SQLite face index and rank the closest matches
 - `db info`: print database summary statistics including hash-based duplicate counts
-- `db optimize`: remove duplicate rows while keeping the earliest record for each unique image + embedding pair
+- `db optimize`: remove duplicate face rows, keeping the lowest-ID row for each embedding per image content hash (or image path in older indexes)
 
 ## Build a face index
 
@@ -61,14 +54,24 @@ Options:
 
 - `--db-path`: destination SQLite database path (default: `faces.db`)
 - `--model-name`: DeepFace embedding model (default: `ArcFace`)
-- `--detector-backend`: face detection backend
+- `--detector-backend`: face detection backend (default: `retinaface`; choices: `retinaface`, `mtcnn`, `opencv`, `ssd`, `dlib`, `mediapipe`)
 - `--overwrite / --append`: clear the database before indexing or append to the existing database
 
-The scan command indexes every detected face in each image while preserving image-level metadata for deduplication. It computes a SHA-256 `content_hash` for each file and a lightweight perceptual hash when possible. Exact duplicate files are skipped before the DeepFace embedding step, which reduces the GPU-heavy part of indexing substantially on folders that contain repeated or copied images.
+The scan command indexes every detected face in each supported image (`.png`,
+`.jpg`, `.jpeg`, `.bmp`, or `.webp`), searching each target directory
+recursively. It computes a SHA-256 `content_hash` and records a lightweight
+perceptual hash when possible. Files with identical content hashes are skipped
+before DeepFace extraction, including copies already present in the index when
+using `--append`. Perceptual hashes are stored as metadata; they are not
+currently used to skip near-duplicate images.
 
-When scanning multiple directories, the CLI commits progress after each directory completes. This keeps earlier results durable if a later directory fails or the scan is interrupted and restarted, without turning SQLite into a write hotspot for every individual face insert.
+`--overwrite` is the default and clears existing face and image rows before
+scanning. Use `--append` to preserve the index. When scanning multiple
+directories, each directory is committed after it completes, so earlier
+directories remain saved if a later one fails.
 
-The index stores compact `float32` embeddings as SQLite `BLOB` data for efficient matching and retrieval.
+The index stores compact `float32` embeddings as SQLite `BLOB` data, with
+image and face metadata.
 
 ## SQLite schema and duplicate tracking
 
@@ -95,11 +98,12 @@ Current face metadata includes:
 - `perceptual_hash`
 - `image_id`
 
-This lets the project distinguish between:
+The metadata supports:
 
 - exact duplicate files (`content_hash` match)
-- near-duplicate files (`perceptual_hash` match)
-- repeated face entries caused by re-scanning the same image or multi-face detection within an image
+- perceptual similarity metadata (`perceptual_hash`), which can be used for
+  later near-duplicate workflows
+- image records and the face detections associated with them
 
 ## Compare two portraits directly
 
@@ -115,10 +119,15 @@ This command compares two images and prints the same text output style as `match
 1. /path/to/target.jpg | distance=12.34% | similarity=87.66%
 ```
 
-The scores are normalized to a percentage from 0 to 100:
+Both commands print a distance and similarity percentage from 0 to 100:
 
 - `similarity`: higher is better
 - `distance`: lower is better
+
+These are normalized scores derived from the embedding distance, not calibrated
+probabilities or identity-confidence estimates. `--by-similarity` is the
+default sort order; `--by-distance` sorts from lowest distance upward. Add
+`--json` to either command for a JSON array of result objects.
 
 ## Match a source portrait against the index
 
@@ -127,14 +136,17 @@ uv run doppelsort match ./source.jpg --db-path ./faces.db --top-n 10
 uv run doppelsort match ./source.jpg --db-path ./faces.db --by-distance --json
 ```
 
-This workflow loads embeddings from the SQLite database, computes each candidate’s distance from the source embedding, and ranks candidates by either similarity or distance.
+This workflow extracts the source image's face embedding, loads indexed face
+embeddings from SQLite, and returns at most `--top-n` candidates (default: 5).
+The required `--db-path` must point to an existing index created with `scan`.
 
 The sort behavior is:
 
 - `--by-similarity`: highest similarity first
 - `--by-distance`: lowest distance first
 
-Scores are displayed as percentages, not raw float values.
+Text results contain the image path, distance, and similarity for each indexed
+face. JSON results also include the face record's `id` and `bbox`.
 
 ## Inspect and maintain the SQLite database
 
@@ -146,20 +158,30 @@ uv run doppelsort db optimize ./faces.db
 `db info` reports summary stats such as:
 
 - `rows`: total face entries in the SQLite database
-- `unique_images`: number of distinct image paths
+- `unique_images`: number of distinct image paths with face rows
 - `unique_embeddings`: number of distinct embedding vectors
-- `duplicate_rows`: number of rows that share the same image path and embedding
+- `duplicate_rows`: number of image-path/embedding groups containing repeated
+  face rows
 - `unique_content_hashes`: number of distinct image content hashes
-- `duplicate_content_hashes`: number of duplicate content hashes across indexed images
-- `first_seen` / `last_seen`: earliest and latest insertion timestamps
+- `duplicate_content_hashes`: number of content-hash groups appearing more
+  than once
+- `first_seen` / `last_seen`: earliest and latest face insertion timestamps
+  (Unix timestamps)
 
-The difference between `unique_images` and `unique_embeddings` matters because a single image may contain multiple detected faces. If the same image is scanned repeatedly or resolves to more than one face, `unique_embeddings` can be greater than `unique_images`.
+`duplicate_rows` reports duplicate groups, not the number of excess rows in
+those groups. `unique_images` counts distinct image paths with indexed face
+rows, while `unique_embeddings` counts distinct embedding vectors. One image
+can produce multiple face embeddings.
 
-`db optimize` removes duplicate face rows while keeping the earliest record for each unique image + embedding pair. It is useful after repeated scans or multi-face indexing when the same face got inserted multiple times. Since exact duplicates are now tracked by `content_hash` and `image_id`, repeated image copies can be filtered before DeepFace indexing and cleaned up more predictably later.
+`db optimize` removes duplicate face rows and keeps the row with the lowest ID
+for each embedding grouped by `content_hash` when that column exists, or by
+`image_path` for older databases. For current indexes, identical image files
+with matching embeddings therefore share a deduplication group even if their
+paths differ.
 
 ## Notes
 
-- TensorFlow warns when no GPU is detected; the CLI prints a CPU warning in those environments.
-- The scan path now performs a cheap image hash check before DeepFace extraction, which is the biggest performance win for duplicate-heavy photo collections.
-- Multi-directory scans are checkpointed per directory, so restarts retain previously completed work while still keeping database writes reasonably efficient.
-- The project targets Python 3.12 for compatibility with the current DeepFace/TensorFlow stack.
+- Scan, compare, and match print a CPU warning when TensorFlow reports no GPU.
+- The database uses SQLite WAL mode and adds missing image/hash metadata columns
+  when opening an older index for scanning, preserving compatibility with
+  earlier face tables.
