@@ -158,13 +158,18 @@ This command compares two images and prints the same text output style as `match
 1. /path/to/target.jpg | distance=12.34% | similarity=87.66%
 ```
 
-Both commands print a distance and similarity percentage from 0 to 100:
+Both commands calculate the Euclidean distance between face embeddings, then
+derive the displayed percentages from that distance as
+`similarity = 1 / (1 + distance)` and `distance = 1 - similarity`. This shared
+scoring method keeps `compare` and SQLite-backed `match` results consistent
+for the same pair of embeddings. The displayed values range from 0 to 100:
 
 - `similarity`: higher is better
 - `distance`: lower is better
 
 These are normalized scores derived from the embedding distance, not calibrated
-probabilities or identity-confidence estimates. `--by-similarity` is the
+probabilities or identity-confidence estimates. The directory-comparison
+helper uses DeepFace verification scores instead. `--by-similarity` is the
 default sort order; `--by-distance` sorts from lowest distance upward. Add
 `--json` to either command for a JSON array of result objects.
 

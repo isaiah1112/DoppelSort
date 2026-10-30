@@ -390,6 +390,12 @@ def _to_distance_percent(similarity: float) -> float:
     return round(max(0.0, min(100.0, (1.0 - float(similarity)) * 100.0)), 2)
 
 
+def _score_embeddings(source_embedding: np.ndarray, candidate_embedding: np.ndarray) -> tuple[float, float]:
+    distance = float(np.linalg.norm(source_embedding - candidate_embedding))
+    similarity = 1.0 / (1.0 + distance)
+    return distance, similarity
+
+
 def _sort_match_rows(rows: list[dict[str, object]], sort_by: str) -> list[dict[str, object]]:
     normalized_sort = sort_by.lower()
     if normalized_sort not in {"similarity", "distance"}:
@@ -431,8 +437,7 @@ def match_source_to_db(
     scored_matches: list[dict[str, object]] = []
     for record in db_faces:
         candidate_embedding = record["embedding"]
-        distance = float(np.linalg.norm(source_embedding - candidate_embedding))
-        similarity = 1.0 / (1.0 + distance)
+        distance, similarity = _score_embeddings(source_embedding, candidate_embedding)
         scored_matches.append(
             {
                 "id": record["id"],
@@ -539,8 +544,7 @@ def compare_images(
 
     source_embedding = np.mean(np.stack([face["embedding"] for face in source_faces]), axis=0).astype(np.float32)
     target_embedding = np.mean(np.stack([face["embedding"] for face in target_faces]), axis=0).astype(np.float32)
-    distance = float(np.linalg.norm(source_embedding - target_embedding))
-    similarity = 1.0 / (1.0 + distance)
+    distance, similarity = _score_embeddings(source_embedding, target_embedding)
 
     result: list[dict[str, object]] = [
         {

@@ -7,7 +7,7 @@ import pytest
 import tensorflow as tf
 from click.testing import CliRunner
 
-from doppelsort.cli import find_top_matches, main
+from doppelsort.cli import compare_images, find_top_matches, main, match_source_to_db
 
 
 def test_cli_help_renders() -> None:
@@ -441,6 +441,54 @@ def test_compare_command_emits_json(tmp_path, monkeypatch) -> None:
     assert len(results) == 1
     assert results[0]["path"] == str(target_path)
     assert {"distance", "similarity"} <= results[0].keys()
+
+
+def test_compare_and_database_match_use_the_same_embedding_scores(tmp_path, monkeypatch) -> None:
+    source_path = tmp_path / "source.jpg"
+    target_path = tmp_path / "target.jpg"
+    source_path.write_bytes(b"source")
+    target_path.write_bytes(b"target")
+    source_embedding = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    target_embedding = np.array([0.8, 0.6, 0.0], dtype=np.float32)
+
+    def represent(*, img_path, **kwargs):
+        embedding = source_embedding if img_path == str(source_path) else target_embedding
+        return [{"embedding": embedding}]
+
+    monkeypatch.setattr("doppelsort.cli.DeepFace.represent", represent)
+
+    db_path = tmp_path / "faces.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE faces (
+            id INTEGER PRIMARY KEY,
+            image_path TEXT NOT NULL,
+            bbox TEXT NOT NULL,
+            embedding BLOB NOT NULL,
+            embedding_norm REAL,
+            timestamp INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO faces (image_path, bbox, embedding, embedding_norm, timestamp) VALUES (?, ?, ?, ?, ?)",
+        (
+            str(target_path),
+            "{}",
+            target_embedding.tobytes(),
+            float(np.linalg.norm(target_embedding)),
+            1,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    compared = compare_images(source_path, target_path)[0]
+    matched = match_source_to_db(source_path, db_path)[0]
+
+    assert compared["distance"] == matched["distance"]
+    assert compared["similarity"] == matched["similarity"]
 
 
 def test_scan_skips_exact_duplicate_images_by_content_hash(tmp_path, monkeypatch) -> None:
